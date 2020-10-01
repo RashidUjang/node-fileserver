@@ -69,13 +69,14 @@ const { stat, readdir } = require("fs").promises;
 // MIME-type handler library, which can automatically get the MIME type for any particular file type
 const mime = require("mime");
 
+// If HTTP method type is GET, then retrieve the file
 methods.GET = async function (request) {
   let path = urlPath(request.url);
   let stats;
 
   // Get's some metadata on the file that is located at path. If found, assign to stats. If not found, throw an error.
   try {
-    // TODO: Replace stat() call here with just. Not recommended according to the Node.js documentation
+    // TODO: Replace stat() call here with just opening the file. Not recommended according to the Node.js documentation
     // https://nodejs.org/api/fs.html#fs_fs_stat_path_options_callback
     stats = await stat(path);
   } catch (error) {
@@ -84,10 +85,61 @@ methods.GET = async function (request) {
     else return { status: 404, body: "File not found" };
   }
 
-  // Checks if the path of the item that is a directory. If yes, get all files in the directory
+  // Checks if the path of the item that is a directory. If yes, get all files in the directory and just display the names.
+  // If it's not directory and is a straight file
   if (stats.isDirectory()) {
+    // Readdir returns an Array of string of all names in the directory
     return { body: (await readdir(path)).join("\n") };
   } else {
+    // If it's not a directory, the request body will be the streamed contents of the file at path
     return { body: createReadStream(path), type: mime.getType(path) };
   }
+};
+
+const { rmdir, unlink } = require("fs").promises;
+
+// If HTTP method type is DELETE, then the file will be removed
+methods.DELETE = async function (request) {
+  let path = urlPath(request.url);
+  let stats;
+
+  // Check if there is a file at path
+  try {
+    stats = await stat(path);
+  } catch (error) {
+    if (error.code != "ENOENT") throw error;
+    // 204 error code means the response doesn't contain any data and the application is successful.
+    // The HTTP standard encourages us to make requests idempotent, which means that making the same request multiple times produces
+    // the same result as making it once. Hence, the request returns successful if the file is not there, instead of an error.
+    // In a way, the objective of the request has been fulfilled
+    else return { status: 204 };
+  }
+
+  // Use rmdir() if specified path is a directory. If not, use unlink.
+  if (stats.isDirectory()) await rmdir(path);
+  else await unlink(path);
+
+  // After a successful deletion, what is returned is a successful
+  return { status: 204 };
+};
+
+const { createWriteStream } = require("fs");
+
+// Pipes the data from first arg to second arg, returning a Promise, with some error handling
+function pipeStream(from, to) {
+  return new Promise((resolve, reject) => {
+    from.on("error", reject);
+    to.on("error", reject);
+    to.on("finish", resolve);
+    from.pipe(to);
+  });
+}
+
+// If HTTP method is PUT, to transfer the file from the host to the server
+methods.PUT = async function (request) {
+  let path = urlPath(request.url);
+  
+  // Transfers the file from first arg, into second arg. This is possible as request is a stream
+  await pipeStream(request, createWriteStream(path));
+  return { status: 204 };
 };
